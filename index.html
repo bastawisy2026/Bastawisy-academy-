@@ -1,0 +1,157 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>منصة الحصص التعليمية</title>
+    <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+    <style>
+        * { box-sizing: border-box; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; margin: 0; padding: 0; }
+        body { background-color: #f4f6f9; color: #333; padding: 20px; }
+        .container { max-width: 800px; margin: 0 auto; }
+        .card { background: white; padding: 20px; border-radius: 12px; box-shadow: 0 4px 6px rgba(0,0,0,0.05); margin-bottom: 20px; }
+        h2 { margin-bottom: 15px; color: #1e293b; font-size: 1.2rem; }
+        input, button { width: 100%; padding: 12px; margin-top: 10px; border-radius: 8px; border: 1px solid #cbd5e1; font-size: 1rem; }
+        button { background-color: #2563eb; color: white; border: none; font-weight: bold; cursor: pointer; transition: 0.2s; }
+        button:hover { background-color: #1d4ed8; }
+        .balance-box { background: #eff6ff; border: 1px solid #bfdbfe; color: #1e40af; padding: 15px; border-radius: 8px; text-align: center; font-size: 1.2rem; font-weight: bold; }
+        .lesson-item { border: 1px solid #e2e8f0; border-radius: 8px; padding: 15px; margin-top: 10px; display: flex; justify-content: space-between; align-items: center; }
+        .video-container { position: relative; padding-bottom: 56.25%; height: 0; overflow: hidden; margin-top: 15px; border-radius: 8px; }
+        .video-container iframe { position: absolute; top: 0; left: 0; width: 100%; height: 100%; border: 0; }
+        .hidden { display: none; }
+    </style>
+</head>
+<body>
+
+<div class="container">
+    <!-- تسجيل الدخول -->
+    <div id="auth-section" class="card">
+        <h2>تسجيل الدخول للمنصة</h2>
+        <input type="text" id="student-name" placeholder="الاسم بالكامل">
+        <input type="tel" id="student-phone" placeholder="رقم الموبايل">
+        <button onclick="login()">دخول</button>
+    </div>
+
+    <!-- لوحة الطالب -->
+    <div id="dashboard-section" class="hidden">
+        <div class="card">
+            <h2 id="welcome-msg">مرحباً بك</h2>
+            <div class="balance-box">رصيدك الحالي: <span id="user-balance">0</span> جنيه</div>
+        </div>
+
+        <!-- شحن الكارت -->
+        <div class="card">
+            <h2>شحن رصيد جديد (كارت)</h2>
+            <input type="text" id="recharge-code" placeholder="أدخل كود الشحن (مثال: CODE30TEST)">
+            <button onclick="recharge()">شحن الكود</button>
+        </div>
+
+        <!-- قائمة الحصص -->
+        <div class="card">
+            <h2>الحصص المتاحة</h2>
+            <div id="lessons-list">جارٍ تحميل الحصص...</div>
+        </div>
+    </div>
+</div>
+
+<script>
+    const SUPABASE_URL = 'https://ygtmxfqgvdiqbkzpuuzg.supabase.co';
+    const SUPABASE_KEY = 'sb_publishable_0-L8AMd72QoL0dtbhcF1wg_Pa4lRhPw';
+    const supabaseClient = supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
+
+    let currentStudent = null;
+
+    async function login() {
+        const name = document.getElementById('student-name').value.trim();
+        const phone = document.getElementById('student-phone').value.trim();
+
+        if (!name || !phone) return alert('برجاء كتابة الاسم ورقم الموبايل');
+
+        let { data: student, error } = await supabaseClient.from('students').select('*').eq('phone', phone).single();
+
+        if (!student) {
+            const { data: newStudent, error: createError } = await supabaseClient
+                .from('students')
+                .insert([{ phone, name, balance: 0 }])
+                .select().single();
+            student = newStudent;
+        }
+
+        currentStudent = student;
+        document.getElementById('auth-section').classList.add('hidden');
+        document.getElementById('dashboard-section').classList.remove('hidden');
+        document.getElementById('welcome-msg').innerText = `أهلاً بك يا ${student.name}`;
+        updateBalanceDisplay();
+        loadLessons();
+    }
+
+    function updateBalanceDisplay() {
+        document.getElementById('user-balance').innerText = currentStudent.balance;
+    }
+
+    async function recharge() {
+        const codeInput = document.getElementById('recharge-code').value.trim();
+        if (!codeInput) return alert('أدخل الكود');
+
+        const { data: codeData, error } = await supabaseClient
+            .from('recharge_codes')
+            .select('*')
+            .eq('code', codeInput)
+            .eq('is_used', false)
+            .single();
+
+        if (error || !codeData) return alert('الكود غير صحيح أو تم استخدامه من قبل!');
+
+        const newBalance = Number(currentStudent.balance) + Number(codeData.value);
+
+        await supabaseClient.from('students').update({ balance: newBalance }).eq('phone', currentStudent.phone);
+        await supabaseClient.from('recharge_codes').update({ is_used: true, used_by: currentStudent.phone }).eq('id', codeData.id);
+
+        currentStudent.balance = newBalance;
+        updateBalanceDisplay();
+        document.getElementById('recharge-code').value = '';
+        alert(`تم شحن ${codeData.value} جنيه بنجاح!`);
+    }
+
+    async function loadLessons() {
+        const { data: lessons } = await supabaseClient.from('lessons').select('*');
+        const { data: purchases } = await supabaseClient.from('student_purchases').select('lesson_id').eq('student_phone', currentStudent.phone);
+        
+        const purchasedIds = purchases ? purchases.map(p => p.lesson_id) : [];
+        const container = document.getElementById('lessons-list');
+        container.innerHTML = '';
+
+        lessons.forEach(lesson => {
+            const isPurchased = purchasedIds.includes(lesson.id);
+            const div = document.createElement('div');
+            div.className = 'lesson-item';
+            div.style.flexDirection = 'column';
+            div.style.alignItems = 'stretch';
+
+            let actionHTML = isPurchased 
+                ? `<div class="video-container"><iframe src="${lesson.video_url}" allowfullscreen></iframe></div>`
+                : `<div style="display:flex; justify-content:space-between; align-items:center; margin-top:10px;">
+                    <span>السعر: ${lesson.price} جنيه</span>
+                    <button style="width:auto;" onclick="buyLesson('${lesson.id}', ${lesson.price})">شراء الحصة الآن</button>
+                   </div>`;
+
+            div.innerHTML = `<div><strong>${lesson.title}</strong><p style="font-size:0.9rem; color:#64748b;">${lesson.description}</p></div>${actionHTML}`;
+            container.appendChild(div);
+        });
+    }
+
+    async function buyLesson(lessonId, price) {
+        if (currentStudent.balance < price) return alert('رصيدك غير كافٍ! قم بشحن كارت جديد أولاً.');
+
+        const newBalance = currentStudent.balance - price;
+        await supabaseClient.from('students').update({ balance: newBalance }).eq('phone', currentStudent.phone);
+        await supabaseClient.from('student_purchases').insert([{ student_phone: currentStudent.phone, lesson_id: lessonId }]);
+
+        currentStudent.balance = newBalance;
+        updateBalanceDisplay();
+        loadLessons();
+        alert('تم شراء الحصة بنجاح! استمتع بالمشاهدة.');
+    }
+</script>
+</body>
+</html>
